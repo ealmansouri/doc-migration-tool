@@ -18,7 +18,6 @@ from io import BytesIO
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-
 class WordDocumentMigrator:
     """Handles migration of content from old Word documents to new templates"""
 
@@ -116,18 +115,33 @@ class WordDocumentMigrator:
             if new_section.lower() == old_section_lower:
                 return new_section
 
-        # Then try partial match
+        # Clean and split into words, removing common words that don't help matching
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'for', 'on', 'at', 'by'}
+
+        # Get meaningful words from old section
+        old_words = set(old_section_lower.split()) - stop_words
+        old_words = {word.strip('.,;:!?()[]{}') for word in old_words if word.strip('.,;:!?()[]{})')}
+
+        best_match = None
+        best_match_count = 0
+
+        # Try to find section with most words in common
         for new_section in new_sections:
             new_section_lower = new_section.lower()
-            # Check if key words match
-            old_words = set(old_section_lower.split())
-            new_words = set(new_section_lower.split())
+            # Get meaningful words from new section
+            new_words = set(new_section_lower.split()) - stop_words
+            new_words = {word.strip('.,;:!?()[]{}') for word in new_words if word.strip('.,;:!?()[]{})')}
 
-            # If significant overlap, consider it a match
-            if len(old_words & new_words) >= len(old_words) * 0.5:
-                return new_section
+            # Find common words
+            common_words = old_words & new_words
 
-        return None
+            # If at least 1 word matches, consider it a potential match
+            if len(common_words) >= 1:
+                if len(common_words) > best_match_count:
+                    best_match = new_section
+                    best_match_count = len(common_words)
+
+        return best_match
 
     def copy_paragraph(self, para, target_doc: Document, insert_after=None):
         """
@@ -280,18 +294,53 @@ class WordDocumentMigrator:
         """
         if custom_mapping:
             self.section_mapping = custom_mapping
+            print("\n=== CUSTOM SECTION MAPPING APPLIED ===")
+            for old_section, new_section in custom_mapping.items():
+                print(f"  '{old_section}' -> '{new_section}'")
         else:
             # Auto-detect mappings
             old_sections = self.extract_sections(self.old_doc)
             new_sections = self.extract_sections(self.new_doc)
 
+            print("\n=== AUTO-DETECTING SECTION MAPPINGS ===")
+            print("Looking for sections with at least 1 word in common...\n")
+
+            # Define stop words to ignore in matching
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'for', 'on', 'at', 'by'}
+
             for old_section in old_sections.keys():
                 matching = self.find_matching_section(old_section, list(new_sections.keys()))
                 if matching:
                     self.section_mapping[old_section] = matching
-                    logger.info(f"Mapped: '{old_section}' -> '{matching}'")
+
+                    # Show which words matched
+                    old_words = set(old_section.lower().split()) - stop_words
+                    old_words = {word.strip('.,;:!?()[]{}') for word in old_words if word.strip('.,;:!?()[]{})')}
+                    new_words = set(matching.lower().split()) - stop_words
+                    new_words = {word.strip('.,;:!?()[]{}') for word in new_words if word.strip('.,;:!?()[]{})')}
+                    common_words = old_words & new_words
+
+                    print(f"✓ MAPPED: '{old_section}'")
+                    print(f"      TO: '{matching}'")
+                    print(f"  COMMON: {', '.join(common_words)}")
+                    print()
+
+                    logger.info(f"Mapped: '{old_section}' -> '{matching}' (common words: {common_words})")
                 else:
+                    print(f"✗ NO MATCH: '{old_section}'")
+                    print()
                     logger.warning(f"No matching section found for: '{old_section}'")
+
+            # Summary
+            print(f"\n=== MAPPING SUMMARY ===")
+            print(f"Total sections in old document: {len(old_sections)}")
+            print(f"Successfully mapped: {len(self.section_mapping)}")
+            print(f"Unmapped sections: {len(old_sections) - len(self.section_mapping)}")
+
+            if self.section_mapping:
+                print("\n=== FINAL MAPPING TABLE ===")
+                for old, new in self.section_mapping.items():
+                    print(f"  '{old}' -> '{new}'")
 
     def migrate_content(self):
         """Main method to perform the content migration"""
@@ -349,9 +398,9 @@ def main():
     """Example usage of the Word Document Migrator"""
 
     # Define file paths
-    old_doc_path = "AND-1807-010-ESTFIN.docx"  # Path to your old HLD/LLD document
-    template_path = "TfL-HLD_Template_2024_DRAFT_v0.1.docx"  # Path to your new Word template
-    output_path = "new_ESTFIN_HLD.docx"  # Path for the output document
+    old_doc_path = "old_network_hld.docx"  # Path to your old HLD/LLD document
+    template_path = "new_template.docx"    # Path to your new Word template
+    output_path = "migrated_document.docx" # Path for the output document
 
     # Optional: Define custom section mappings
     # If not provided, the script will try to auto-match sections
