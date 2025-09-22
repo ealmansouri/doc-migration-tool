@@ -422,7 +422,7 @@ def main():
 
         # Setup custom mapping if provided
         if custom_mapping:
-            migrator.setup_sectio○n_mapping(custom_mapping)
+            migrator.setup_section_mapping(custom_mapping)
 
         # Perform migration
         migrator.migrate_content()
