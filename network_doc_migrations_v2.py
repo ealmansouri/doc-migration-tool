@@ -395,45 +395,153 @@ class WordDocumentMigrator:
 
 
 def main():
-    """Example usage of the Word Document Migrator"""
+    """Main function to run the Word Document Migrator with command line arguments"""
 
-    # Define file paths
-    old_doc_path = "old_network_hld.docx"  # Path to your old HLD/LLD document
-    template_path = "new_template.docx"    # Path to your new Word template
-    output_path = "migrated_document.docx" # Path for the output document
+    import argparse
+    import sys
+    import json
 
-    # Optional: Define custom section mappings
-    # If not provided, the script will try to auto-match sections
-    custom_mapping = {
-        # "Old Section Name": "New Section Name",
-        # Example:
-        # "1. Introduction": "1. Executive Summary",
-        # "2. Network Architecture": "2. Architecture Overview",
-        # "3. Technical Design": "3. Detailed Design",
-    }
+    # Set up argument parser
+    parser = argparse.ArgumentParser(
+        description="Migrate content from old Word HLD/LLD documents to new templates",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  Basic usage:
+    python migrate_word.py old_doc.docx template.docx output.docx
+  
+  With analysis only (no migration):
+    python migrate_word.py old_doc.docx template.docx output.docx --analyze
+  
+  With custom mapping file:
+    python migrate_word.py old_doc.docx template.docx output.docx --mapping mapping.json
+  
+  Interactive mode (review mappings before migration):
+    python migrate_word.py old_doc.docx template.docx output.docx --interactive
+        """
+    )
+
+    # Required arguments
+    parser.add_argument('old_doc',
+                       help='Path to the old Word document (source)')
+    parser.add_argument('template',
+                       help='Path to the new Word template')
+    parser.add_argument('output',
+                       help='Path for the output document')
+
+    # Optional arguments
+    parser.add_argument('--analyze', '-a',
+                       action='store_true',
+                       help='Only analyze documents and show sections without migrating')
+    parser.add_argument('--mapping', '-m',
+                       help='Path to JSON file containing custom section mappings')
+    parser.add_argument('--interactive', '-i',
+                       action='store_true',
+                       help='Review auto-detected mappings before migration')
+    parser.add_argument('--verbose', '-v',
+                       action='store_true',
+                       help='Enable verbose logging')
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Configure logging level
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Load custom mapping if provided
+    custom_mapping = {}
+    if args.mapping:
+        try:
+            with open(args.mapping, 'r') as f:
+                custom_mapping = json.load(f)
+                print(f"Loaded custom mapping from: {args.mapping}")
+        except FileNotFoundError:
+            print(f"Error: Mapping file not found: {args.mapping}")
+            sys.exit(1)
+        except json.JSONDecodeError:
+            print(f"Error: Invalid JSON in mapping file: {args.mapping}")
+            sys.exit(1)
 
     try:
         # Create migrator instance
-        migrator = WordDocumentMigrator(old_doc_path, template_path, output_path)
+        migrator = WordDocumentMigrator(args.old_doc, args.template, args.output)
 
-        # Optional: Print section summary to help with mapping
-        print("Analyzing documents...")
+        # Load documents
+        migrator.load_documents()
+
+        # Show section analysis
+        print("\nAnalyzing documents...")
         migrator.print_section_summary()
 
-        # Setup custom mapping if provided
+        # If analyze only mode, exit here
+        if args.analyze:
+            print("\n[Analysis complete - no migration performed]")
+            sys.exit(0)
+
+        # Setup mapping
         if custom_mapping:
             migrator.setup_section_mapping(custom_mapping)
+        else:
+            # Auto-detect mappings
+            migrator.setup_section_mapping()
+
+        # Interactive mode - allow user to review mappings
+        if args.interactive and not custom_mapping:
+            print("\n" + "="*50)
+            response = input("Do you want to proceed with these mappings? (yes/no/edit): ").lower().strip()
+
+            if response == 'edit':
+                print("\nEnter custom mappings (or press Enter to skip):")
+                print("Format: old_section -> new_section")
+                print("Type 'done' when finished\n")
+
+                custom_mapping = {}
+                while True:
+                    mapping_input = input("Mapping: ").strip()
+                    if mapping_input.lower() == 'done':
+                        break
+                    if ' -> ' in mapping_input:
+                        old, new = mapping_input.split(' -> ', 1)
+                        custom_mapping[old.strip()] = new.strip()
+                        print(f"  Added: {old.strip()} -> {new.strip()}")
+                    elif mapping_input:
+                        print("  Invalid format. Use: old_section -> new_section")
+
+                if custom_mapping:
+                    migrator.setup_section_mapping(custom_mapping)
+
+            elif response != 'yes':
+                print("Migration cancelled.")
+                sys.exit(0)
 
         # Perform migration
+        print("\nStarting migration...")
         migrator.migrate_content()
 
-        print(f"\nSuccess! Migrated content saved to: {output_path}")
+        print(f"\n✅ Success! Migrated content saved to: {args.output}")
+
+        # Option to save the mapping for future use
+        if not custom_mapping and migrator.section_mapping:
+            save_mapping = input("\nSave these mappings for future use? (yes/no): ").lower().strip()
+            if save_mapping == 'yes':
+                mapping_file = args.output.replace('.docx', '_mapping.json')
+                with open(mapping_file, 'w') as f:
+                    json.dump(migrator.section_mapping, f, indent=2)
+                print(f"Mappings saved to: {mapping_file}")
 
     except FileNotFoundError as e:
-        print(f"Error: Could not find file - {e}")
+        print(f"\n❌ Error: Could not find file - {e}")
+        sys.exit(1)
+    except PermissionError as e:
+        print(f"\n❌ Error: Permission denied - {e}")
+        print("Make sure the files are not open in Word and you have write permissions.")
+        sys.exit(1)
     except Exception as e:
-        print(f"Error during migration: {e}")
-        logger.error(f"Migration failed: {str(e)}", exc_info=True)
+        print(f"\n❌ Error during migration: {e}")
+        if args.verbose:
+            logger.error(f"Migration failed: {str(e)}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
