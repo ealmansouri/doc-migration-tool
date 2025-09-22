@@ -143,24 +143,92 @@ class WordDocumentMigrator:
 
         return best_match
 
-    def copy_paragraph(self, para, target_doc: Document, insert_after=None):
+
+
+    def insert_content_after_heading(self, heading_text: str, content_list: List[Tuple]):
         """
-        Copy a paragraph with formatting to the target document
+        Insert content after a specific heading in the new document
 
         Args:
-            para: Source paragraph
-            target_doc: Target document
-            insert_after: Element to insert after (if None, append to end)
+            heading_text: The heading to insert content after
+            content_list: List of (type, content) tuples
         """
-        new_para = target_doc.add_paragraph()
+        # Find the heading in the document element structure
+        heading_element = None
+        for element in self.new_doc.element.body:
+            if element.tag.endswith('p'):
+                for p in self.new_doc.paragraphs:
+                    if p._element == element and p.text.strip() == heading_text:
+                        heading_element = element
+                        break
+                if heading_element is not None:
+                    break
 
-        # Copy paragraph properties
-        if para.alignment:
-            new_para.alignment = para.alignment
+        if heading_element is None:
+            logger.warning(f"Could not find heading: {heading_text}")
+            return
+
+        # Get the parent (body) and the index of the heading
+        body = self.new_doc.element.body
+        heading_index = body.index(heading_element)
+        insert_index = heading_index + 1
+
+        # Track elements we're adding so we can insert them in order
+        elements_to_insert = []
+
+        for content_type, content in content_list:
+            if content_type == 'paragraph':
+                if content.text.strip() or self._has_images(content):  # Include if has text or images
+                    # Create new paragraph with same content
+                    new_para = self._create_paragraph_element(content)
+                    elements_to_insert.append(new_para)
+
+            elif content_type == 'table':
+                # Create new table element
+                new_table = self._copy_table_element(content)
+                if new_table is not None:
+                    elements_to_insert.append(new_table)
+
+        # Insert all elements at the correct position
+        for i, element in enumerate(elements_to_insert):
+            body.insert(insert_index + i, element)
+
+        logger.info(f"Inserted {len(elements_to_insert)} elements after section: {heading_text}")
+
+    def _create_paragraph_element(self, source_para):
+        """
+        Create a new paragraph element with content from source paragraph
+
+        Args:
+            source_para: Source paragraph to copy
+
+        Returns:
+            New paragraph element
+        """
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import qn
+        from docx.text.paragraph import Paragraph
+
+        # Create new paragraph through the document
+        new_p = self.new_doc.add_paragraph()
+
+        # Clear default text
+        new_p.clear()
+
+        # Copy alignment if exists
+        if source_para.alignment:
+            new_p.alignment = source_para.alignment
+
+        # Copy paragraph style if applicable
+        if source_para.style and source_para.style.name != 'Normal':
+            try:
+                new_p.style = source_para.style.name
+            except:
+                pass
 
         # Copy runs with formatting
-        for run in para.runs:
-            new_run = new_para.add_run(run.text)
+        for run in source_para.runs:
+            new_run = new_p.add_run(run.text)
 
             # Copy formatting
             if run.bold:
@@ -174,116 +242,118 @@ class WordDocumentMigrator:
             if run.font.size:
                 new_run.font.size = run.font.size
 
-        return new_para
+        # Extract the element and remove from document body (we'll insert it at right place)
+        element = new_p._element
+        self.new_doc.element.body.remove(element)
 
-    def copy_table(self, table, target_doc: Document):
+        # Check for and copy images
+        self._copy_images_from_paragraph(source_para, new_p)
+
+        return element
+
+    def _copy_table_element(self, source_table):
         """
-        Copy a table with all its content to the target document
+        Create a copy of a table element
 
         Args:
-            table: Source table
-            target_doc: Target document
+            source_table: Source table to copy
+
+        Returns:
+            New table element
         """
-        # Create new table with same dimensions
-        new_table = target_doc.add_table(rows=len(table.rows), cols=len(table.columns))
+        try:
+            # Create new table with same dimensions
+            new_table = self.new_doc.add_table(rows=len(source_table.rows),
+                                              cols=len(source_table.columns))
 
-        # Copy table style if available
-        if table.style:
-            try:
-                new_table.style = table.style
-            except:
-                logger.warning("Could not copy table style")
+            # Copy table style if available
+            if source_table.style:
+                try:
+                    new_table.style = source_table.style
+                except:
+                    logger.debug("Could not copy table style")
 
-        # Copy cell content
-        for i, row in enumerate(table.rows):
-            for j, cell in enumerate(row.cells):
-                new_cell = new_table.rows[i].cells[j]
+            # Copy cell content
+            for i, row in enumerate(source_table.rows):
+                for j, cell in enumerate(row.cells):
+                    new_cell = new_table.rows[i].cells[j]
 
-                # Clear default paragraph
-                if new_cell.paragraphs:
-                    p = new_cell.paragraphs[0]
-                    p.clear()
+                    # Clear default paragraph
+                    if new_cell.paragraphs:
+                        p = new_cell.paragraphs[0]
+                        p.clear()
 
-                # Copy all paragraphs from source cell
-                for para_idx, para in enumerate(cell.paragraphs):
-                    if para_idx == 0 and new_cell.paragraphs:
-                        # Use existing first paragraph
-                        new_para = new_cell.paragraphs[0]
-                    else:
-                        new_para = new_cell.add_paragraph()
+                    # Copy all paragraphs from source cell
+                    for para_idx, para in enumerate(cell.paragraphs):
+                        if para_idx == 0 and new_cell.paragraphs:
+                            # Use existing first paragraph
+                            new_para = new_cell.paragraphs[0]
+                        else:
+                            new_para = new_cell.add_paragraph()
 
-                    # Copy text and basic formatting
-                    for run in para.runs:
-                        new_run = new_para.add_run(run.text)
-                        if run.bold:
-                            new_run.bold = True
-                        if run.italic:
-                            new_run.italic = True
+                        # Copy text and formatting
+                        for run in para.runs:
+                            new_run = new_para.add_run(run.text)
+                            if run.bold:
+                                new_run.bold = True
+                            if run.italic:
+                                new_run.italic = True
 
-        return new_table
+            # Extract element and remove from body
+            element = new_table._element
+            self.new_doc.element.body.remove(element)
 
-    def copy_image(self, para, target_doc: Document):
+            return element
+
+        except Exception as e:
+            logger.error(f"Error copying table: {str(e)}")
+            return None
+
+    def _has_images(self, para):
         """
-        Copy images from a paragraph to the target document
+        Check if a paragraph contains images
 
         Args:
-            para: Source paragraph potentially containing images
-            target_doc: Target document
+            para: Paragraph to check
+
+        Returns:
+            Boolean indicating if paragraph has images
         """
-        # Check for inline shapes (images)
         for run in para.runs:
-            if 'graphic' in run._element.xml:
-                # Extract image data
-                for inline in run._element.iter():
-                    if 'blip' in inline.tag:
-                        for attr in inline.attrib:
-                            if 'embed' in attr:
-                                rId = inline.attrib[attr]
-                                # Get image from document
-                                try:
-                                    image_part = para.part.related_parts[rId]
-                                    image_data = image_part.blob
+            if 'graphic' in run._element.xml or 'picture' in run._element.xml:
+                return True
+        return False
 
-                                    # Add image to new document
-                                    new_para = target_doc.add_paragraph()
-                                    run = new_para.add_run()
-                                    run.add_picture(BytesIO(image_data), width=Inches(4))
-                                    logger.info("Successfully copied an image")
-                                except Exception as e:
-                                    logger.warning(f"Could not copy image: {str(e)}")
-
-    def insert_content_after_heading(self, heading_text: str, content_list: List[Tuple]):
+    def _copy_images_from_paragraph(self, source_para, target_para):
         """
-        Insert content after a specific heading in the new document
+        Copy images from source paragraph to target paragraph
 
         Args:
-            heading_text: The heading to insert content after
-            content_list: List of (type, content) tuples
+            source_para: Source paragraph with potential images
+            target_para: Target paragraph to add images to
         """
-        # Find the heading paragraph
-        heading_para = None
-        for i, para in enumerate(self.new_doc.paragraphs):
-            if para.text.strip() == heading_text:
-                heading_para = para
-                heading_index = i
-                break
+        try:
+            # Check each run for inline shapes/images
+            for run in source_para.runs:
+                if 'graphic' in run._element.xml:
+                    # Try to extract and copy the image
+                    for inline in run._element.iter():
+                        if 'blip' in inline.tag:
+                            for attr in inline.attrib:
+                                if 'embed' in attr:
+                                    rId = inline.attrib[attr]
+                                    try:
+                                        image_part = source_para.part.related_parts[rId]
+                                        image_data = image_part.blob
 
-        if not heading_para:
-            logger.warning(f"Could not find heading: {heading_text}")
-            return
-
-        # Insert content after the heading
-        for content_type, content in content_list:
-            if content_type == 'paragraph':
-                if content.text.strip():  # Only copy non-empty paragraphs
-                    self.copy_paragraph(content, self.new_doc)
-                    # Check for images
-                    self.copy_image(content, self.new_doc)
-
-            elif content_type == 'table':
-                self.copy_table(content, self.new_doc)
-
-        logger.info(f"Inserted content for section: {heading_text}")
+                                        # Add image to target paragraph
+                                        new_run = target_para.add_run()
+                                        new_run.add_picture(BytesIO(image_data), width=Inches(4))
+                                        logger.debug("Successfully copied an image")
+                                    except Exception as e:
+                                        logger.warning(f"Could not copy image: {str(e)}")
+        except Exception as e:
+            logger.debug(f"Error checking for images: {str(e)}")
 
     def setup_section_mapping(self, custom_mapping: Dict[str, str] = None):
         """
